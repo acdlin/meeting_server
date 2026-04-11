@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <arpa/inet.h>
 #include <cstring>
+#include <climits>
 
 int parse_port(const char* start , uint16_t * port)
 {
@@ -18,7 +19,18 @@ int parse_port(const char* start , uint16_t * port)
     return 0;
 }
 
+int parse_process(const char* start , int * processes)
+{
+    char* end = nullptr;
+    errno = 0;
+    unsigned long val = strtoul(start , &end , 10);
+    if( start == end || *end != '\0' || errno == ERANGE || val == 0 || val > INT_MAX) return -1;
+    *processes = static_cast<int>(val);
+    return 0;
+}
 
+
+//读满n个字符，返回读取的字符数量
 ssize_t readn(int fd , void* buf , size_t n)
 {
     size_t remain  = n;
@@ -38,6 +50,8 @@ ssize_t readn(int fd , void* buf , size_t n)
     return static_cast<ssize_t>(n - remain);
 }
 
+
+//写满n个字符，返回写了的字符数量
 ssize_t writen(int fd ,const void* buf ,size_t n)
 {
     size_t remain = n;
@@ -58,6 +72,8 @@ ssize_t writen(int fd ,const void* buf ,size_t n)
     return static_cast<ssize_t>(n - remain);
 }
 
+
+//返回是否读取正确数量的字符的读取函数
 static bool read_exact(int fd , void* buf ,size_t n)
 {
     ssize_t r = readn(fd , buf , n);
@@ -65,6 +81,8 @@ static bool read_exact(int fd , void* buf ,size_t n)
 
 }
 
+
+//将frame发送出去的函数
 int send_frame(int fd , const Frame& fr)
 {
     std::vector<uint8_t> buf;
@@ -84,6 +102,7 @@ int send_frame(int fd , const Frame& fr)
     return (writen(fd , buf.data() , buf.size()) == static_cast<ssize_t>(buf.size()) ? 0 : -1);
 }
 
+//读取frame的函数（成功1 ， 对端关闭 0 ， 失败-1）
 int read_frame(int fd , Frame& fr)
 {
     uint8_t head[11];
@@ -125,12 +144,25 @@ int read_frame(int fd , Frame& fr)
     return 1;
 }
 
-int send_text(int fd , const std::string& msg , uint32_t ip_net)
+//将字符发出的函数（带类型的帧）
+int send_string_frame(int fd , MsgType type , const std::string & msg )
+{
+    Frame fr{};
+    fr.payload.assign(msg.begin() , msg.end());
+    fr.type = type;
+    return send_frame(fd , fr);
+}
+
+
+//专门发无符号32位的函数
+int send_u32_frame(int fd , MsgType type , uint32_t value , uint32_t ip_net)
 {
     Frame fr{};
     fr.ip_net = ip_net;
-    fr.payload.assign(msg.begin() , msg.end());
-    fr.type = MsgType::TEXT_RECV;
+    fr.payload.resize(4);
+    uint32_t net = htonl(value);
+    memcpy(fr.payload.data() , &net , 4);
+    fr.type = type;
     return send_frame(fd , fr);
 }
 

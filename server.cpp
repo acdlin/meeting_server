@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <fcntl.h>
 
 int make_listen_socket(uint16_t port)
 {
@@ -25,6 +26,14 @@ int make_listen_socket(uint16_t port)
         close(fd);
         return -1;
     }
+
+    int flags = fcntl(fd , F_GETFL , 0);
+    if(fcntl(fd , F_SETFL , flags|O_NONBLOCK) == -1 )
+    {
+        err_quit("fcntl");
+        close(fd);
+    }
+    
     sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;

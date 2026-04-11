@@ -1,0 +1,13 @@
+#可执行文件
+server
+
+#编译中间文件
+*.o
+*.obj
+*.a
+
+#IDE
+.vscode/
+
+#编译输出目录
+build/
