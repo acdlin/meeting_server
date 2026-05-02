@@ -1,26 +1,19 @@
 CXX = g++
-CXXFLAGS = -Wall -g -std=c++17
+CXXFLAGS = -Wall -O0 -g -std=c++17 -pthread -MMD -MP
 
 TARGET = server
-SRCS = main.cpp error.cpp net.cpp server.cpp
+SRCS = main.cpp error.cpp net.cpp thread_main.cpp unpthread.cpp room.cpp signal.cpp
 OBJS = $(SRCS:.cpp=.o)
+DEPS = $(OBJS:.o=.d)
 
-$(TARGET) : $(OBJS)
+$(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) $(OBJS) -o $(TARGET)
 
-main.o : main.cpp error.h server.h net.h
-	$(CXX) $(CXXFLAGS) -c main.cpp -o main.o
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-net.o : net.cpp net.h
-	$(CXX) $(CXXFLAGS) -c net.cpp -o net.o
-
-server.o : server.cpp error.h 
-	$(CXX) $(CXXFLAGS) -c server.cpp -o server.o
-
-error.o : error.cpp error.h
-	$(CXX) $(CXXFLAGS) -c error.cpp -o error.o
-
+-include $(DEPS)
 
 .PHONY: clean
 clean:
-	rm -f $(TARGET) $(OBJS)
+	rm -f $(TARGET) $(OBJS) $(DEPS)

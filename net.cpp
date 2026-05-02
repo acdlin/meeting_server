@@ -1,4 +1,5 @@
 #include "net.h"
+#include "error.h"
 #include <iostream>
 #include <cstdint>
 #include <vector>
@@ -8,6 +9,8 @@
 #include <arpa/inet.h>
 #include <cstring>
 #include <climits>
+#include <fcntl.h>
+#include <sys/epoll.h>
 
 int parse_port(const char* start , uint16_t * port)
 {
@@ -29,25 +32,40 @@ int parse_process(const char* start , int * processes)
     return 0;
 }
 
+void Socketpair(int domain , int type , int protocol , int* sock)
+{
+    if(socketpair(domain , type , protocol , sock) < 0)
+    {
+        err_quit("sockerpair");
+    }
+}
+
 
 //读满n个字符，返回读取的字符数量
 ssize_t readn(int fd , void* buf , size_t n)
 {
-    size_t remain  = n;
-    char * p = static_cast<char *>(buf);
+    size_t remain = n;
+    char* p = static_cast<char*>(buf);
     while(remain > 0)
     {
-        ssize_t r = ::read(fd , p , remain);
-        if(r < 0 )
+        ssize_t r = read(fd , p , remain);
+        if(r > 0)
         {
-            if(errno == EINTR) continue;
+            remain -= r;
+            p += r;
+        }
+        else if(r == 0)
+        {
+            break;
+        }
+        else
+        {
+            if(errno == EINTR)  continue;
+            if(errno == EAGAIN || errno == EWOULDBLOCK)    break;
             return -1;
         }
-        if (r == 0) break;
-        remain -= r;
-        p +=r;
     }
-    return static_cast<ssize_t>(n - remain);
+    return n - remain;
 }
 
 
@@ -62,6 +80,7 @@ ssize_t writen(int fd ,const void* buf ,size_t n)
         if(w < 0)
         {
             if(errno == EINTR) continue;
+            if(errno == EWOULDBLOCK || errno == EAGAIN) break;
             return -1;
         } 
         if(w == 0) break;
@@ -73,96 +92,195 @@ ssize_t writen(int fd ,const void* buf ,size_t n)
 }
 
 
-//返回是否读取正确数量的字符的读取函数
-static bool read_exact(int fd , void* buf ,size_t n)
+
+int make_listen_socket(uint16_t port , socklen_t * addrlen )
 {
-    ssize_t r = readn(fd , buf , n);
-    return r == static_cast<ssize_t>(n);
-
-}
-
-
-//将frame发送出去的函数
-int send_frame(int fd , const Frame& fr)
-{
-    std::vector<uint8_t> buf;
-    buf.reserve(11 + fr.payload.size() + 1);
-
-    buf.push_back('$');
-
-    uint16_t type_net = htons(static_cast<uint16_t>(fr.type));
-    uint32_t len_net = htonl(static_cast<uint32_t>(fr.payload.size()));
-
-    buf.insert(buf.end(),reinterpret_cast<uint8_t*>(&type_net),reinterpret_cast<uint8_t*>(&type_net) + sizeof(type_net));
-    buf.insert(buf.end(),reinterpret_cast<const uint8_t*>(&fr.ip_net),reinterpret_cast<const uint8_t*>(&fr.ip_net) + sizeof(fr.ip_net));
-    buf.insert(buf.end(),reinterpret_cast<uint8_t*>(&len_net), reinterpret_cast<uint8_t*>(&len_net) + sizeof(len_net));
-    
-    buf.insert(buf.end() , fr.payload.begin() , fr.payload.end());
-    buf.push_back('#');
-    return (writen(fd , buf.data() , buf.size()) == static_cast<ssize_t>(buf.size()) ? 0 : -1);
-}
-
-//读取frame的函数（成功1 ， 对端关闭 0 ， 失败-1）
-int read_frame(int fd , Frame& fr)
-{
-    uint8_t head[11];
-    ssize_t r = readn(fd , head, sizeof(head));
-    if(r == 0) return 0;
-    if(r != static_cast<ssize_t>(sizeof(head))) return -1;
-
-    if(head[0] != '$') return -1;
-
-    uint16_t type_net;
-    std::memcpy(&type_net , head + 1 , 2);
-    uint16_t type_host = ntohs(type_net);
-
-    uint32_t ip_net;
-    std::memcpy(&ip_net , head +3 , 4);
-
-
-    uint32_t len_net;
-    std::memcpy(&len_net ,head + 7 , 4);
-    uint32_t len_host = ntohl(len_net);
-
-    const uint32_t MAX_PAYLOAD = 4 * 1024 * 1024;
-    if( len_host > MAX_PAYLOAD) return -1;
-
-    std::vector<uint8_t> payload;
-    payload.resize(len_host);
-
-    if(len_host > 0)
+    int fd = 0;
+    fd = socket(AF_INET ,SOCK_STREAM , 0);
+    if( fd < 0 )
     {
-        if(!read_exact(fd , payload.data() , len_host)) return -1;
+        err_quit("socket");
+        return -1;
     }
-    uint8_t tail;
-    if(!read_exact(fd , &tail , 1)) return -1;
-    if(tail != '#') return -1;
+    int opt = 1;
+    
+    if(setsockopt(fd , SOL_SOCKET , SO_REUSEADDR , &opt , sizeof(opt)) < 0)
+    {
+        err_quit("setsockopt");
+        close(fd);
+        return -1;
+    }
 
-    fr.type = static_cast<MsgType>(type_host);
-    fr.ip_net = ip_net;
-    fr.payload = std::move(payload);
-    return 1;
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(fd, (sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+        err_quit("bind");
+        close(fd);
+        return -1;
+    }
+
+    if (listen(fd, 128) < 0)
+    {
+        err_quit("listen");
+        close(fd);
+        return -1;
+    }
+    if(addrlen)
+    {
+        *addrlen = sizeof(sockaddr_in);
+    }
+    return fd;
+
 }
 
-//将字符发出的函数（带类型的帧）
-int send_string_frame(int fd , MsgType type , const std::string & msg )
+int Epoll_create(int flags)
 {
-    Frame fr{};
-    fr.payload.assign(msg.begin() , msg.end());
-    fr.type = type;
-    return send_frame(fd , fr);
+    int epfd = 0;
+    epfd = epoll_create1(flags);
+    if(epfd == -1)
+    {
+        err_quit("epoll_create");
+    }
+    return epfd;
 }
 
-
-//专门发无符号32位的函数
-int send_u32_frame(int fd , MsgType type , uint32_t value , uint32_t ip_net)
+void write_fd(int sockfd , const void *ptr , size_t nbytes , int fdtosend)
 {
-    Frame fr{};
-    fr.ip_net = ip_net;
-    fr.payload.resize(4);
-    uint32_t net = htonl(value);
-    memcpy(fr.payload.data() , &net , 4);
-    fr.type = type;
-    return send_frame(fd , fr);
+    struct msghdr msg{};
+    struct iovec iov{};
+
+    iov.iov_base = const_cast<void*>(ptr);
+    iov.iov_len = nbytes;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    char control[CMSG_SPACE(sizeof(int))]{};
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    *reinterpret_cast<int*>(CMSG_DATA(cmsg)) = fdtosend;
+
+    if(sendmsg(sockfd , &msg , 0) < 0)
+    {
+        err_quit("write fd");
+    }
+
 }
 
+void recv_fd(int sockfd , void* ptr ,size_t nbytes ,  int* fd)
+{
+    struct msghdr msg{};
+    struct iovec iov{};
+    iov.iov_base = ptr;
+    iov.iov_len = nbytes;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    char control[CMSG_SPACE(sizeof(int))]{};
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof(control);
+
+    if(recvmsg(sockfd , &msg , 0) < 0)
+    {
+        err_quit("recv msg");
+    }
+
+    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+    if(cmsg == nullptr)
+    {
+        err_quit("err read msg");
+    }
+    if(cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS)
+    {
+        err_quit("err type");
+    }
+    memcpy(fd , CMSG_DATA(cmsg) , sizeof(int));
+
+}
+const char* Sock_ntop(char* str, int size, const sockaddr* sa, socklen_t salen)
+{
+    if (!str || size <= 0 || !sa) return nullptr;
+    str[0] = '\0';
+
+    switch (sa->sa_family)
+    {
+    case AF_INET:
+    {
+        if (salen < static_cast<socklen_t>(sizeof(sockaddr_in))) return nullptr;
+        const auto* sin = reinterpret_cast<const sockaddr_in*>(sa);
+
+        if (!inet_ntop(AF_INET, &sin->sin_addr, str, size)) return nullptr;
+
+        const uint16_t port = ntohs(sin->sin_port);
+        if (port > 0) {
+            const int used = static_cast<int>(strlen(str));
+            if (used < size) {
+                snprintf(str + used, size - used, ":%u", port);
+            }
+        }
+        return str;
+    }
+
+    case AF_INET6:
+    {
+        if (salen < static_cast<socklen_t>(sizeof(sockaddr_in6))) return nullptr;
+        const auto* sin6 = reinterpret_cast<const sockaddr_in6*>(sa);
+
+        if (!inet_ntop(AF_INET6, &sin6->sin6_addr, str, size)) return nullptr;
+
+        const uint16_t port = ntohs(sin6->sin6_port);
+        if (port > 0) {
+            const int used = static_cast<int>(strlen(str));
+            if (used < size) {
+                snprintf(str + used, size - used, ":%u", port);
+            }
+        }
+        return str;
+    }
+
+    default:
+        return nullptr;
+    }
+}
+int Accept(int listenfd, sockaddr* addr, socklen_t *addrlen)  //带错误处理的accept
+{
+    while(true)
+    {
+        int n = accept(listenfd , addr , addrlen);
+
+        if( n >= 0 )
+        {
+            return n;
+        }
+        else if(errno == EINTR)
+        {
+            continue;
+        }
+        else if(errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            return -1;
+        }
+        err_quit("accept error");
+    }
+}
+
+uint32_t getpeerip(int connfd)
+{
+    sockaddr_in peeraddr;
+    socklen_t addrlen = sizeof(peeraddr);
+    if(getpeername(connfd , (sockaddr*)&peeraddr , &addrlen) < 0)
+    {
+        err_msg("getpeername error");
+        return -1;
+    }
+    return peeraddr.sin_addr.s_addr;
+}
