@@ -50,6 +50,7 @@ void dowithuser(int connfd)
         }
         else if(ret <11 || head[0] != '$')
         {
+            close(connfd);
             err_msg("data error");
             return ;
         }
@@ -70,6 +71,7 @@ void dowithuser(int connfd)
                 readn(connfd , &tail , 1);
                 if(datasize != 0 || tail != '#')
                 {
+                    close(connfd);
                     err_msg("err frame");
                 }
                 else
@@ -145,6 +147,7 @@ void dowithuser(int connfd)
             }
             else
             {
+                close(connfd);
                 err_msg("error format");
             }
         }

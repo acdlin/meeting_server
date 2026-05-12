@@ -96,7 +96,8 @@ public:
         return room_no; // 返回房间号
     }
     
-    void release_room_by_index(int room_index) {  // 改为传业务号，更自然
+    //发
+    void release_room_by_index(int room_index) {  
         Pthread_mutex_lock(&lock);
 
         if (room_index >= 0 && room_index < room_count && rooms[room_index].status == 1) {
@@ -116,6 +117,7 @@ public:
         Pthread_mutex_unlock(&lock);
     }
 
+        //成员退出(通过房间索引)
         void remove_member_by_index(int room_index)
     {
         Pthread_mutex_lock(&lock);
@@ -132,6 +134,7 @@ public:
     }
 
 
+    //获取与main通信的pipe
     int getroompipe(int room_no)
     {
         Pthread_mutex_lock(&lock);
@@ -155,8 +158,8 @@ public:
     }
 
 private:
-    int used_rooms;
-    int room_count;
+    int used_rooms;     //已被占用的房间数量
+    int room_count;     //可用的总房间数
     std::vector<Room> rooms;
     pthread_mutex_t lock;
     std::unordered_map<int, int> room_index_map;  // room_no -> room_index

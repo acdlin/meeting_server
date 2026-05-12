@@ -2,13 +2,14 @@
 #include "error.h"
 #include "net.h"
 #include "unpthread.h"
+#include "signal_util.h"
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 
 int listenfd,room_num,thread_num;
-pthread_t* tptr;
-Manager* manager = nullptr;
+pthread_t* tptr = nullptr;
+Manager* manager = nullptr;             //房间管理类
 socklen_t addrlen = 0;
 
 void sig_chld(int signo);
@@ -17,6 +18,7 @@ void thread_make(int num);
 
 int main(int argc , char** argv)
 {
+    Signal(SIGCHLD , sig_chld);
     int room_num = 0;
     int thread_num = 0;
     int maxfd = -1;
@@ -32,7 +34,7 @@ int main(int argc , char** argv)
     if(parse_process(argv[2] , &room_num) != 0)     err_quit("parse processes");
     if(parse_process(argv[3] , &thread_num) != 0)   err_quit("parse threads");
     tptr = new pthread_t[thread_num];
-    std::vector<int> pipefds(room_num);
+    std::vector<int> pipefds(room_num);             //存在和子进程通行的管道
     manager = new Manager(room_num);
     listenfd = make_listen_socket(port , &addrlen);
     maxfd = listenfd;
