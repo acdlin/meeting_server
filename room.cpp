@@ -74,31 +74,36 @@ public:
         Pthread_mutex_unlock(&mtx);
     }
 
-    void member_in(int fd )
+void member_in(int fd)
+{
+    Pthread_mutex_lock(&mtx);
+    add_fd_to_epoll(fd);
+    members.insert(fd);
+    fdtoip.emplace(fd, getpeerip(fd));
+    
+    MSG msg{};
+    msg.type = MsgType::PARTNER_JOIN;
+    msg.targetfd = fd;
+    msg.ip_net = fdtoip[fd];
+    send_queue.push_queue(msg);
+    
+    MSG msg1{};
+    msg1.type = MsgType::PARTNER_JOIN2;
+    msg1.targetfd = fd;
+    msg1.ip_net = fdtoip[fd];
+    
+    for(auto& pair : fdtoip)           // C++11 写法
     {
-        Pthread_mutex_lock(&mtx);
-        add_fd_to_epoll(fd);
-        members.insert(fd);
-        fdtoip.emplace(fd , getpeerip(fd));
-        MSG msg{};
-        msg.type = MsgType::PARTNER_JOIN;
-        msg.targetfd = fd;
-        msg.ip_net = fdtoip[fd];
-        send_queue.push_queue(msg);
-        MSG msg1{};
-        msg1.type = MsgType::PARTNER_JOIN2;
-        msg1.targetfd = fd;
-        msg1.ip_net = fdtoip[fd];
-        for(auto& [key, ip_net] : fdtoip)
+        auto& ip_net = pair.second;
+        if(ip_net != fdtoip[fd])
         {
-            if(ip_net != fdtoip[fd])
-            {
-                msg1.payload.append(reinterpret_cast<const char *>(&ip_net) , sizeof(ip_net));
-            }
+            msg1.payload.append(reinterpret_cast<const char *>(&ip_net), sizeof(ip_net));
         }
-        send_queue.push_queue(msg1);
-        Pthread_mutex_unlock(&mtx);
     }
+    
+    send_queue.push_queue(msg1);
+    Pthread_mutex_unlock(&mtx);
+}
 
     void add_fd_to_epoll(int fd )
     {
@@ -212,12 +217,11 @@ public:
 
         msg.payload.resize(payload_len);
 
-        if (readn(clientfd, msg.payload.data(), payload_len) != static_cast<ssize_t>(payload_len))
+    if (readn(clientfd, &msg.payload[0], payload_len) != static_cast<ssize_t>(payload_len))
         {
             err_msg("payload read error");
             return;
         }
-
         char tail = 0;
         if (readn(clientfd, &tail, 1) != 1 || tail != '#')
         {

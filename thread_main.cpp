@@ -79,6 +79,7 @@ void dowithuser(int connfd)
                     int roomNo;
                     if((roomNo = manager->create_room()) == -1)
                     {
+                        roomNo = 0;
                         MSG msg{};
                         msg.type = MsgType::CREATE_MEETING_RESPONSE;
                         uint32_t room_net = htonl(static_cast<uint32_t>(roomNo));
@@ -138,7 +139,6 @@ void dowithuser(int connfd)
                     close(connfd);
                     return;
                 }
-
                 uint32_t fail_net = htonl(0);
                 msg.payload.assign(reinterpret_cast<const char*>(&fail_net), sizeof(fail_net));
                 writetofd(connfd, msg);
