@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -Wall -O0 -g -std=c++17 -pthread   
+CXXFLAGS = -Wall -O0 -g -std=c++11 -pthread   
 
 TARGET = server
 SRCS = main.cpp error.cpp net.cpp thread_main.cpp unpthread.cpp room.cpp signal.cpp

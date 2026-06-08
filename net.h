@@ -24,6 +24,7 @@ enum class MsgType : uint16_t
     PARTNER_JOIN2 = 24
 };
 
+
 enum class Image_Format : uint16_t
 {
     Format_Invalid,
@@ -78,4 +79,5 @@ void recv_fd(int sockfd , void* ptr , size_t nbytes , int* fd);
 const char* Sock_ntop(char* str, int size, const sockaddr* sa, socklen_t salen);
 int Accept(int listenfd, sockaddr* addr, socklen_t *addrlen);
 uint32_t getpeerip(int connfd );
+uint16_t getpeerport(int connfd);
 

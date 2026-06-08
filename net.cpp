@@ -284,3 +284,15 @@ uint32_t getpeerip(int connfd)
     }
     return peeraddr.sin_addr.s_addr;
 }
+
+uint16_t getpeerport(int connfd)
+{
+    sockaddr_in peeraddr;
+    socklen_t addrlen = sizeof(peeraddr);
+    if(getpeername(connfd, (sockaddr*)&peeraddr, &addrlen) < 0)
+    {
+        err_msg("getpeername error");
+        return 0;
+    }
+    return peeraddr.sin_port;
+}

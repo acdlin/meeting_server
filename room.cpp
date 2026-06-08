@@ -58,6 +58,8 @@ public:
         room_no = 0;
         members.clear();
         fdtoip.clear();
+        fdtoport.clear();
+        fdbuf.clear();
         send_queue.clear();
         Pthread_mutex_unlock(&mtx);
     }
@@ -68,6 +70,7 @@ public:
         owner = fd;
         members.insert(fd);
         fdtoip.emplace(fd , getpeerip(fd));
+        fdtoport.emplace(fd, getpeerport(fd));
         roomstatus = ON;
         add_fd_to_epoll(fd);
         room_no = room_num;
@@ -79,29 +82,36 @@ void member_in(int fd)
     Pthread_mutex_lock(&mtx);
     add_fd_to_epoll(fd);
     members.insert(fd);
-    fdtoip.emplace(fd, getpeerip(fd));
-    
+    uint32_t ip = getpeerip(fd);
+    uint16_t port = getpeerport(fd);
+    fdtoip.emplace(fd, ip);
+    fdtoport.emplace(fd, port);
+
     MSG msg{};
     msg.type = MsgType::PARTNER_JOIN;
     msg.targetfd = fd;
-    msg.ip_net = fdtoip[fd];
+    msg.ip_net = ip;
+    msg.payload.assign(reinterpret_cast<const char *>(&port), sizeof(port));
     send_queue.push_queue(msg);
-    
+
     MSG msg1{};
     msg1.type = MsgType::PARTNER_JOIN2;
     msg1.targetfd = fd;
-    msg1.ip_net = fdtoip[fd];
-    
-    for(auto& pair : fdtoip)           // C++11 写法
+    msg1.ip_net = ip;
+
+    for(auto& pair : fdtoip)
     {
-        auto& ip_net = pair.second;
-        if(ip_net != fdtoip[fd])
+        if(pair.first != fd)
         {
-            msg1.payload.append(reinterpret_cast<const char *>(&ip_net), sizeof(ip_net));
+            uint32_t member_ip = pair.second;
+            msg1.payload.append(reinterpret_cast<const char *>(&member_ip), sizeof(member_ip));
+            uint16_t member_port = fdtoport[pair.first];
+            msg1.payload.append(reinterpret_cast<const char *>(&member_port), sizeof(member_port));
         }
     }
-    
+
     send_queue.push_queue(msg1);
+
     Pthread_mutex_unlock(&mtx);
 }
 
@@ -181,92 +191,118 @@ void member_in(int fd)
         }
     }
 
-    void handle_client_read(int clientfd , int pipefd)
+    void handle_client_read(int clientfd, int pipefd)
     {
-        char head[11] = {0};
-        int ret = readn(clientfd , head , 11);
-        if(ret <= 0)
+        char tmp[4096];
+        ssize_t n = read(clientfd, tmp, sizeof(tmp));
+        if (n < 0)
         {
-            fdclose(clientfd , pipefd);
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return;
+            fdclose(clientfd, pipefd);
             return;
         }
-
-        if(ret != 11 || head[0] != '$')
-        {
-            err_msg("msg format error");
-            return;
-        }
-
-        MsgType type;
-        memcpy(&type , head + 1 , sizeof(uint16_t));
-        type = static_cast<MsgType>(ntohs(static_cast<uint16_t>(type)));
-
-        uint32_t payload_len_net = 0;
-        memcpy(&payload_len_net, head + 7, sizeof(payload_len_net));
-        uint32_t payload_len = ntohl(payload_len_net);
-
-        MSG msg{};
-        msg.targetfd = clientfd;
-        msg.ip_net = getip(clientfd);
-
-    if (type == MsgType::IMG_SEND || type == MsgType::AUDIO_SEND || type == MsgType::TEXT_SEND)
-    {
-        if (type == MsgType::IMG_SEND) msg.type = MsgType::IMG_RECV;
-        else if (type == MsgType::AUDIO_SEND) msg.type = MsgType::AUDIO_RECV;
-        else msg.type = MsgType::TEXT_RECV;
-
-        msg.payload.resize(payload_len);
-
-    if (readn(clientfd, &msg.payload[0], payload_len) != static_cast<ssize_t>(payload_len))
-        {
-            err_msg("payload read error");
-            return;
-        }
-        char tail = 0;
-        if (readn(clientfd, &tail, 1) != 1 || tail != '#')
-        {
-            err_msg("tail format error");
-            return;
-        }
-
-        send_queue.push_queue(msg);
-    }
-    else if (type == MsgType::CLOSE_CAMERA)
-    {
-        char tail = 0;
-        if (payload_len == 0 && readn(clientfd, &tail, 1) == 1 && tail == '#')
-        {
-            msg.type = MsgType::CLOSE_CAMERA;
-            send_queue.push_queue(msg);
-        }
-        else
-        {
-            err_msg("close camera format error");
-        }
-    }
-    else if (type == MsgType::EXIT_MEETING)
-    {
-        char tail = 0;
-
-        if (payload_len == 0 &&
-            readn(clientfd, &tail, 1) == 1 &&
-            tail == '#')
+        if (n == 0)
         {
             fdclose(clientfd, pipefd);
+            return;
         }
-        else
+
+        auto& buf = fdbuf[clientfd];
+        buf.insert(buf.end(), tmp, tmp + n);
+
+        while (true)
         {
-            err_msg("exit meeting format error");
+            size_t avail = buf.size();
+            if (avail < 11)
+                return;
+
+            char* p = buf.data();
+            if (p[0] != '$')
+            {
+                err_msg("msg format error");
+                fdclose(clientfd, pipefd);
+                return;
+            }
+
+            MsgType type;
+            memcpy(&type, p + 1, sizeof(uint16_t));
+            type = static_cast<MsgType>(ntohs(static_cast<uint16_t>(type)));
+
+            uint32_t payload_len_net = 0;
+            memcpy(&payload_len_net, p + 7, sizeof(payload_len_net));
+            uint32_t payload_len = ntohl(payload_len_net);
+
+            size_t frame_len = 11 + payload_len + 1;
+            if (avail < frame_len)
+                return;  // 帧不完整，等下次数据
+
+            if (p[frame_len - 1] != '#')
+            {
+                err_msg("tail format error");
+                fdclose(clientfd, pipefd);
+                return;
+            }
+
+            MSG msg{};
+            msg.targetfd = clientfd;
+            msg.ip_net = getip(clientfd);
+
+            bool consumed = false;
+
+            if (type == MsgType::IMG_SEND || type == MsgType::AUDIO_SEND || type == MsgType::TEXT_SEND)
+            {
+                if (type == MsgType::IMG_SEND) msg.type = MsgType::IMG_RECV;
+                else if (type == MsgType::AUDIO_SEND) msg.type = MsgType::AUDIO_RECV;
+                else msg.type = MsgType::TEXT_RECV;
+
+                msg.payload.assign(p + 11, payload_len);
+                send_queue.push_queue(msg);
+                consumed = true;
+            }
+            else if (type == MsgType::CLOSE_CAMERA)
+            {
+                if (payload_len == 0)
+                {
+                    msg.type = MsgType::CLOSE_CAMERA;
+                    uint16_t port = getpeerport(clientfd);
+                    uint16_t port_net = htons(port);
+                    msg.payload.assign(reinterpret_cast<const char*>(&port_net), sizeof(port_net));
+                    send_queue.push_queue(msg);
+                    consumed = true;
+                }
+                else
+                {
+                    err_msg("close camera format error");
+                    consumed = true;
+                }
+            }
+            else if (type == MsgType::EXIT_MEETING)
+            {
+                if (payload_len == 0)
+                {
+                    consumed = true;
+                    buf.erase(buf.begin(), buf.begin() + frame_len);
+                    fdclose(clientfd, pipefd);
+                    return;
+                }
+                else
+                {
+                    err_msg("exit meeting format error");
+                    consumed = true;
+                }
+            }
+            else
+            {
+                err_msg("unknown room msg type");
+                fdclose(clientfd, pipefd);
+                return;
+            }
+
+            if (consumed)
+                buf.erase(buf.begin(), buf.begin() + frame_len);
         }
     }
-    else
-    {
-        err_msg("unknown room msg type");
-        fdclose(clientfd, pipefd);
-    }
-
-
-}
 
 void fdclose(int fd , int pipefd)
 {
@@ -282,9 +318,17 @@ void fdclose(int fd , int pipefd)
     uint32_t ip = getip(fd);
 
     Pthread_mutex_lock(&mtx);
+    uint16_t port = 0;
+    auto it = fdtoport.find(fd);
+    if(it != fdtoport.end())
+    {
+        port = it->second;
+    }
     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, nullptr);
     members.erase(fd);
     fdtoip.erase(fd);
+    fdtoport.erase(fd);
+    fdbuf.erase(fd);
     Pthread_mutex_unlock(&mtx);
 
     close(fd);
@@ -296,7 +340,9 @@ void fdclose(int fd , int pipefd)
     msg.type = MsgType::PARTNER_EXIT;
     msg.targetfd = fd;
     msg.ip_net = ip;
+    msg.payload.assign(reinterpret_cast<const char *>(&port), sizeof(port));
     send_queue.push_queue(msg);
+    std::cout << "exit msg sended\n";
 }
 private:
     int epfd{};
@@ -305,6 +351,8 @@ private:
     pthread_mutex_t mtx{};
     std::unordered_set<int> members{};
     std::unordered_map<int , uint32_t> fdtoip{};
+    std::unordered_map<int , uint16_t> fdtoport{};
+    std::unordered_map<int, std::vector<char>> fdbuf{};
 };
 
 const int MB = 1024 * 1024;
@@ -418,7 +466,8 @@ void* send_func(void* arg)
 
     for (int fd : targets)
     {
-        if (writen(fd, buf, len) < 0)
+        ssize_t wret = writen(fd, buf, len);
+        if (wret < 0)
         {
             err_msg("writen error");
         }
