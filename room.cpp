@@ -140,6 +140,15 @@ void member_in(int fd)
         return ip;
     }
 
+    uint16_t getport(int fd)
+    {
+        Pthread_mutex_lock(&mtx);
+        auto it = fdtoport.find(fd);
+        uint16_t port = (it == fdtoport.end()) ? 0 : it->second;
+        Pthread_mutex_unlock(&mtx);
+        return port;
+    }
+
 
     std::vector<int> targets_except(int except_fd)
     {
@@ -256,7 +265,10 @@ void member_in(int fd)
                 else if (type == MsgType::AUDIO_SEND) msg.type = MsgType::AUDIO_RECV;
                 else msg.type = MsgType::TEXT_RECV;
 
-                msg.payload.assign(p + 11, payload_len);
+                uint16_t port = getport(clientfd);
+                msg.payload.assign(reinterpret_cast<const char *>(&port), sizeof(port));
+                if (payload_len > 2)
+                    msg.payload.append(p + 11 + 2, payload_len - 2);
                 send_queue.push_queue(msg);
                 consumed = true;
             }
