@@ -262,20 +262,10 @@ void member_in(int fd)
             }
             else if (type == MsgType::CLOSE_CAMERA)
             {
-                if (payload_len == 0)
-                {
-                    msg.type = MsgType::CLOSE_CAMERA;
-                    uint16_t port = getpeerport(clientfd);
-                    uint16_t port_net = htons(port);
-                    msg.payload.assign(reinterpret_cast<const char*>(&port_net), sizeof(port_net));
-                    send_queue.push_queue(msg);
-                    consumed = true;
-                }
-                else
-                {
-                    err_msg("close camera format error");
-                    consumed = true;
-                }
+                msg.type = MsgType::CLOSE_CAMERA;
+                msg.payload.assign(p + 11, payload_len);
+                send_queue.push_queue(msg);
+                consumed = true;
             }
             else if (type == MsgType::EXIT_MEETING)
             {
